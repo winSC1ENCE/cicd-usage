@@ -50,9 +50,21 @@ GITLAB_TOKEN=... GITLAB_PROJECT_ID=metas-group/data_science/playground \
 ```
 
 - `--quota`: Minuten des Abos pro Monat (Standard 10000 = Premium; Free wäre 400).
-- `--assume`: erwartete Pipelines pro Monat je Typ (`merge_request`, `default_branch`, `schedule`, `other`); ohne Angabe wird der Zeitraum auf 30 Tage hochgerechnet.
+- `--assume`: erwartete Pipelines pro Monat je Typ (`merge_request`, `default_branch`, `schedule`, `duo_workload`, `other`); ohne Angabe wird der Zeitraum auf 30 Tage hochgerechnet. `duo_workload` sind GitLab-Duo-Läufe
+  (z.B. Code Review, Job `workload`); sie verbrauchen ebenfalls Runner-Minuten.
 - Token: Scope `read_api`.
+
+GitHub (Workflow `.github/workflows/ci.yml` bildet die GitLab-Jobs nach). Für öffentliche Repos
+ist kein Token nötig; Kontingent-Standard ist GitHub Enterprise Cloud mit 50 000 Minuten. GitHub
+rundet jeden Job auf ganze Minuten auf und multipliziert Windows mit 2, macOS mit 10:
+
+```
+GITHUB_REPOSITORY=winSC1ENCE/cicd-usage python tools/runner_usage.py --forge github --days 30
+```
 
 In der Pipeline gibt es den Job `report:runner-usage` (manuell auf dem Default-Branch oder per
 Pipeline-Schedule). Dafür die CI/CD-Variable `GITLAB_TOKEN` (maskiert) setzen, optional
 `RUNNER_QUOTA_MINUTES`. Geplante Pipelines führen nur diesen Job aus.
+
+## Auswertung
+[Runner-Verbrauch Playground]( https://claude.ai/artifact/64HVp1VHNmqRHAMys9bMzn)

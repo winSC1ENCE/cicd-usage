@@ -1,0 +1,99 @@
+# Mirrors .gitlab-ci.yml job for job so runner usage can be compared between both platforms.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run ruff check --config pyproject.toml . ../tools
+      - run: uv run ruff format --check --config pyproject.toml . ../tools
+
+  lint-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+
+  test-backend:
+    needs: [lint-backend, lint-frontend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run pytest --cov=app --cov-report=term
+      - run: uv run pytest ../tools -q
+
+  test-frontend:
+    needs: [lint-backend, lint-frontend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+
+  build-image:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: wiki-app:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner hardware
+        run: nproc && free -h
+      - run: docker compose build
+      - run: docker compose up -d
+      - run: |
+          sleep 3
+          docker compose exec -T app python -c "import urllib.request as u; print(u.urlopen('http://localhost:8000/api/health').read().decode())"
+
+  package-registry:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA::8}"
+          IMAGE="$IMAGE" docker compose build
+          docker push "$IMAGE"

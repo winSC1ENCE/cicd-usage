@@ -96,3 +96,82 @@ def test_main_requires_credentials(monkeypatch, capsys):
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
     assert ru.main([]) == 2
     assert "GITLAB_TOKEN" in capsys.readouterr().err
+
+
+def test_duo_workloads_are_their_own_type():
+    by_ref = {"id": 1, "source": "push", "ref": "refs/workloads/c037fffeb32"}
+    assert ru.classify(by_ref, "main") == "duo_workload"
+    plain = {"id": 2, "source": "push", "ref": "feature"}
+    assert ru.classify(plain, "main", [job("workload")]) == "duo_workload"
+    assert ru.classify(plain, "main", [job("workload"), job("test")]) == "other"
+    result = ru.aggregate([(plain, [job("workload", 219)])], "main")
+    assert result["types"]["duo_workload"]["pipelines"] == 1
+
+
+def gh_job(name, start, end, labels=("ubuntu-latest",), conclusion="success"):
+    return {
+        "name": name,
+        "started_at": start,
+        "completed_at": end,
+        "labels": list(labels),
+        "conclusion": conclusion,
+    }
+
+
+def test_github_rounds_each_job_up_to_whole_minutes():
+    run = {"id": 7, "event": "pull_request", "head_branch": "feat"}
+    jobs = [
+        gh_job("lint", "2026-10-09T10:00:00Z", "2026-10-09T10:00:14Z"),
+        gh_job("build", "2026-10-09T10:00:00Z", "2026-10-09T10:01:07Z"),
+        gh_job("win", "2026-10-09T10:00:00Z", "2026-10-09T10:00:30Z", ["windows-latest"]),
+        gh_job("skipped", "2026-10-09T10:00:00Z", "2026-10-09T10:00:00Z", conclusion="skipped"),
+    ]
+    pipeline, normalized = ru.normalize_github(run, jobs)
+    assert pipeline["source"] == "merge_request_event"
+    assert [j["billed_minutes"] for j in normalized] == [1, 2, 2, 0]
+    result = ru.aggregate([(pipeline, normalized)], "main")
+    assert result["types"]["merge_request"]["minutes"] == 5
+    assert result["rows"][2]["runner_class"] == "windows"
+
+
+def test_github_runner_classes():
+    assert ru.github_runner(["ubuntu-24.04"]) == ("linux", 1)
+    assert ru.github_runner(["macos-14"]) == ("macos", 10)
+    assert ru.github_runner(["self-hosted", "linux"]) == ("self-hosted", 0.0)
+    assert ru.github_runner(["something-else"]) == ("unknown", None)
+
+
+def test_github_push_on_default_branch():
+    pipeline, _ = ru.normalize_github({"id": 1, "event": "push", "head_branch": "main"}, [])
+    assert ru.classify(pipeline, "main") == "default_branch"
+
+
+def test_collect_github_pages_through_runs_and_jobs():
+    class FakeApi:
+        def get(self, path, params=None):
+            return {"default_branch": "main"}
+
+        def paginate(self, path, key, params=None):
+            if path == "/actions/runs":
+                assert key == "workflow_runs" and params["created"].startswith(">=")
+                return [{"id": 3, "event": "push", "head_branch": "main"}]
+            assert key == "jobs" and params == {"filter": "all"}
+            return [gh_job("a", "2026-10-09T10:00:00Z", "2026-10-09T10:00:59Z")]
+
+    runs, default = ru.collect_github(FakeApi(), datetime.now(UTC))
+    assert default == "main" and runs[0][1][0]["billed_minutes"] == 1
+
+
+def test_github_report_explains_rounding():
+    pipeline, jobs = ru.normalize_github(
+        {"id": 1, "event": "push", "head_branch": "main"},
+        [gh_job("a", "2026-10-09T10:00:00Z", "2026-10-09T10:00:20Z")],
+    )
+    report = ru.render_markdown(ru.aggregate([(pipeline, jobs)], "main"), 30, 50000, None, "github")
+    assert "GitHub" in report and "ganze Minuten" in report
+
+
+def test_main_github_requires_repository(monkeypatch, capsys):
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    assert ru.main(["--forge", "github"]) == 2
+    assert "GITHUB_REPOSITORY" in capsys.readouterr().err
