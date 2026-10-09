@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    image: ${IMAGE:-wiki-app:dev}
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      GITLAB_URL: ${GITLAB_URL:-https://gitlab.com}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      GITLAB_PROJECT_ID: ${GITLAB_PROJECT_ID:-}
+      GITLAB_TARGET_BRANCH: ${GITLAB_TARGET_BRANCH:-main}
+      GITLAB_CONTENT_PREFIX: ${GITLAB_CONTENT_PREFIX:-content}

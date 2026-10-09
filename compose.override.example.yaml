@@ -1,0 +1,13 @@
+# Lokal nach compose.override.yaml kopieren (gitignored), wenn ein Proxy TLS aufbricht.
+# CA-Bundle als certs/ca.pem ablegen (gitignored). Wird beim Build und zur Laufzeit genutzt.
+services:
+  app:
+    build:
+      secrets: [ca]
+    environment:
+      SSL_CERT_FILE: /etc/ssl/certs/proxy-ca.pem
+    volumes:
+      - ./certs/ca.pem:/etc/ssl/certs/proxy-ca.pem:ro
+secrets:
+  ca:
+    file: ./certs/ca.pem

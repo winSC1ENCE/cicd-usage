@@ -1,0 +1,110 @@
+stages: [lint, test, build, package, report]
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+variables:
+  UV_CACHE_DIR: .cache/uv
+  npm_config_cache: .cache/npm
+
+.not_scheduled:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - when: on_success
+
+.backend:
+  extends: .not_scheduled
+  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  before_script: [cd backend, uv sync --frozen]
+  cache:
+    key: uv-$CI_COMMIT_REF_SLUG
+    paths: [.cache/uv]
+
+.frontend:
+  extends: .not_scheduled
+  image: node:22-slim
+  before_script: [cd frontend, npm ci]
+  cache:
+    key: npm-$CI_COMMIT_REF_SLUG
+    paths: [.cache/npm]
+
+lint:backend:
+  extends: .backend
+  stage: lint
+  script:
+    - uv run ruff check --config pyproject.toml . ../tools
+    - uv run ruff format --check --config pyproject.toml . ../tools
+
+lint:frontend:
+  extends: .frontend
+  stage: lint
+  script: [npm run lint, npm run typecheck]
+
+test:backend:
+  extends: .backend
+  stage: test
+  script:
+    - uv run pytest --cov=app --cov-report=xml --cov-report=term
+    - uv run pytest ../tools -q
+  coverage: '/TOTAL.*\s+(\d+%)/'
+  artifacts:
+    reports:
+      coverage_report: {coverage_format: cobertura, path: backend/coverage.xml}
+
+test:frontend:
+  extends: .frontend
+  stage: test
+  script: [npm test]
+
+build:image:
+  extends: .not_scheduled
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  variables: {DOCKER_TLS_CERTDIR: "/certs", IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"}
+  script:
+    - apk add --no-cache docker-cli-compose
+    - docker compose build
+    - docker compose up -d
+    - sleep 3
+    - docker compose exec -T app python -c "import urllib.request as u; print(u.urlopen('http://localhost:8000/api/health').read().decode())"
+    - docker save "$IMAGE" -o wiki-image.tar
+  artifacts:
+    paths: [wiki-image.tar]
+    expire_in: 1 week
+
+package:registry:
+  stage: package
+  image: docker:27
+  services: [docker:27-dind]
+  variables: {DOCKER_TLS_CERTDIR: "/certs"}
+  needs: [build:image]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  script:
+    - docker load -i wiki-image.tar
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+
+report:runner-usage:
+  stage: report
+  image: python:3.12-slim
+  needs: []
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - python tools/runner_usage.py --days 30 --quota "${RUNNER_QUOTA_MINUTES:-10000}" --out runner-usage.md --csv runner-usage.csv
+  artifacts:
+    paths: [runner-usage.md, runner-usage.csv]
+    expire_in: 90 days
